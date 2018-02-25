@@ -5,44 +5,113 @@
 export MixtureDistribution
 
 struct MixtureDistribution{F<:VariateForm, S<:ValueSupport} <: Distribution{F, S}
-    αs::ProbabilityWeights
-    qs::Vector{D} where D<:Distribution{F, S}
+    components::Vector{D} where D<:Distribution{F, S}
+    priors::ProbabilityWeights
+    log_priors::Vector{Float64}
 
     function MixtureDistribution{F, S}(
-            qs::AbstractArray{DD}, αs::AbstractArray{R}) where
+            components::AbstractArray{DD}, priors::AbstractArray{R}) where
             {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}, R<:Real}
-        (length(αs) == length(qs)) || error("αs and qs must be the same length")
+        (length(priors) == length(components)) ||
+                error("must be the same number of components and priors")
 
-        all(α -> α ≥ 0, αs) || error("αs must be ≥ 0")
-        _αs = ProbabilityWeights(vec(collect(αs))/sum(αs), 1.0)
+        all(α -> α ≥ 0, priors) || error("priors must be ≥ 0")
+        _priors = ProbabilityWeights(vec(collect(priors))/sum(priors), 1.0)
 
-        _qs = vec(qs)
-        all_equal(size, _qs) || error("Distributions must share the same size")
-        all_equal(length, _qs) || error("Distributions must share the same length")
-        all_equal(eltype, _qs) || error("Distributions must share the same element type")
+        _components = vec(components)
+        all_equal(size, _components) || error("components must have the same size")
+        all_equal(length, _components) || error("components must have the same length")
+        all_equal(eltype, _components) || error("components must have the same element type")
 
         # gives an error for support(Poisson)
-        #(F == Univariate) && ( all_equal(support, _qs) ||
+        #(F == Univariate) && ( all_equal(support, _components) ||
         #       error("Distributions must share the same support") )
 
-        return new(_αs, _qs)
+        return new(_components, _priors, log.(_priors))
     end
 end
 
-MixtureDistribution(qs::AbstractArray{DD}, αs::AbstractArray{R}) where
+MixtureDistribution(components::AbstractArray{DD}, priors::AbstractArray{R}) where
         {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}, R<:Real} =
-        MixtureDistribution{F, S}(qs, αs)
+        MixtureDistribution{F, S}(components, priors)
 
-MixtureDistribution(qs::AbstractArray{DD}) where
+MixtureDistribution(components::AbstractArray{DD}) where
         {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}} =
-    MixtureDistribution(qs, ones(length(qs)))
+    MixtureDistribution(components, ones(length(components)))
 
 for fun in Symbol.(["length", "size", "eltype"])
     eval( quote
-        Base.$(fun)(q::MixtureDistribution) = $fun(first(q.qs))
+        Base.$(fun)(d::MixtureDistribution) = $fun(first(d.components))
     end )
 end
 
-Base.Random.rand(q::MixtureDistribution{Univariate}) = rand(q.qs[sample(q.αs)])
-Distributions._rand!(q::MixtureDistribution{Multivariate}, x::AbstractVector) =
-        Distributions._rand!(q.qs[sample(q.αs)], x)
+probs(d::MixtureDistribution) = d.priors.values
+ncomponents(d::MixtureDistribution) = length(d.components)
+components(d::MixtureDistribution) = d.components
+
+#
+# rand
+#
+rand(d::MixtureDistribution{Univariate}) = rand(d.components[sample(d.priors)])
+
+_rand!(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) where T<:Real =
+        _rand!(d.components[sample(d.priors)], x)
+
+_rand!(d::MixtureDistribution{Matrixvariate}, x::AbstractMatrix{T}) where T<:Real =
+        _rand!(d.components[sample(d.priors)], x)
+
+#
+# (log) pdf
+#
+# univariate
+logpdf(d::MixtureDistribution{Univariate}, x::Real) =
+        logsumexp(d.log_priors + logpdf.(d.components, x))
+pdf(d::MixtureDistribution{Univariate}, x::Real) = exp(logpdf(d, x))
+
+# multivariate
+function _logpdf(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) where T<:Real
+    t = Vector{Float64}(ncomponents(d))
+
+    for j in 1:ncomponents(d)
+        @inbounds t[j] = _logpdf(d.components[j], x)
+    end
+
+    return logsumexp(d.log_priors .+ t)
+end
+
+function _logpdf!(r::AbstractArray, d::MixtureDistribution{Multivariate}, x::AbstractMatrix{T}) where T<:Real
+    t = Matrix{Float64}(size(x, 2), ncomponents(d))
+
+    for j in 1:ncomponents(d)
+        _logpdf!(view(t, :, j), d.components[j], x)
+    end
+
+    t .+= d.log_priors'
+
+    for i in 1:size(x, 2)
+        @inbounds r[i] = logsumexp(t[i, :])
+    end
+
+    return r
+end
+
+# matrixvariate
+function _logpdf(d::MixtureDistribution{Matrixvariate}, x::AbstractMatrix)
+    t = Vector{Float64}(ncomponents(d))
+
+    for j in 1:ncomponents(d)
+        @inbounds t[j] = _logpdf(d.components[j], x)
+    end
+
+    return logsumexp(d.log_priors .+ t)
+end
+
+#
+# show
+#
+function show(io::IO, d::MixtureDistribution)
+    println(io, string(typeof(d)))
+    println(io, "prior: ", d.priors)
+    println(io, "components:")
+    println.(io, d.components)
+end
