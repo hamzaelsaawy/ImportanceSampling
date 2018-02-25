@@ -1,0 +1,13 @@
+
+.ipynb_checkpoints
+img
+data
+pdf
+writeup
+
+*.swp
+*.swo
+*.mem
+
+*.jld
+
