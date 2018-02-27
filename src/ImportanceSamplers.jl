@@ -2,7 +2,7 @@ module ImportanceSamplers
 
 using Distributions
 
-import Base: show
+import Base: show, size, mean, cov, var, std
 import Base.Random: rand
 
 import StatsBase: ProbabilityWeights, pweights, sample
