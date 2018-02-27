@@ -2,8 +2,8 @@
 # Compute Statistics Online
 #
 
-export OnlineStatistic, update!, update_batch,
-    MeanVariance,
+export OnlineStatistic, update!,
+    MeanVariance, ControlVariate,
     Diagnostic,
     mean_eff_sample_size, ne, eff_sample_size, neμ,
     var_eff_sample_size, neσ, skew_eff_sample_size, neγ
@@ -13,13 +13,10 @@ abstract type OnlineStatistic{S<:Tuple} end
 size(os::OnlineStatistic{S}) where S<:Tuple = tuple(S.parameters...)
 ndims(os::OnlineStatistic{S}) where S<:Tuple = length(S.parameters)
 
-function update!(os::OnlineStatistic, xs::Union{<:Real, AbstractVector{<:Real}}...)
+# single value update
+function update!(os::OnlineStatistic, xs::AbstractVector{R}...) where R<:Real
     ndims(os) == length(xs) ||
         throw(DimensionMismatch("Number of samples not equal to number of dimensions"))
-
-    xs = [xs...]
-    are_scalars = ndims.(xs) == 0
-    xs[are_scalars] = map(x -> [x], xs[are_scalars]
 
     all(size(os) .== length.(xs)) ||
         throw(DimensionMismatch("Sample sizes inconsistent with dimension lengths."))
@@ -27,13 +24,10 @@ function update!(os::OnlineStatistic, xs::Union{<:Real, AbstractVector{<:Real}}.
     _update!(os, xs...)
 end
 
-function update_batch!(os::OnlineStatistic, xs::AbstractVecOrMat{R}...) where R<:Real
+# batch update
+function update!(os::OnlineStatistic, xs::AbstractMatrix{R}...) where R<:Real
     ndims(os) == length(xs) ||
         throw(DimensionMismatch("Number of samples not equal to number of dimensions"))
-
-    xs = [xs...]
-    are_vectors = ndims.(xs) == 1
-    xs[are_vectors] = map(x -> reshape(x, 1, length(x)), xs[are_vectors])
 
     all(size(os) .== size.(xs, 1)) ||
         throw(DimensionMismatch("Sample sizes inconsistent with dimension lengths."))
@@ -41,11 +35,11 @@ function update_batch!(os::OnlineStatistic, xs::AbstractVecOrMat{R}...) where R<
     all_equal(size.(xs, 2)) ||
         throw(DimensionMismatch("Samples should have the same number of observations."))
 
-    _update_batch!(os, xs...)
+    _update!(os, xs...)
 end
 
 # default implementation
-@inline function _update_batch!(os::OnlineStatistic, xs::AbstractMatrix{R}...) where R<:Real
+@inline function _update!(os::OnlineStatistic, xs::AbstractMatrix{R}...) where R<:Real
     for i = 1:size(x, 2)
         _update!(os, map(x -> view(x, :, i), xs)...)
     end
@@ -73,7 +67,7 @@ MeanVariance(D::Int) = MeanVariance{D}()
 
 _mean(mv::MeanVariance{D}) where D = (mv.N ≥ 1) ? mv.m/mv.N : fill(NaN, D)
 _cov(mv::MeanVariance{D}) where D = (mv.N ≥ 2) ? mv.S / (mv.N-1) : fill(NaN, D, D)
-_var(mv::MeanVariance) = diag(cov(mv))
+_var(mv::MeanVariance) = diag(_cov(mv))
 
 #
 # scalar
@@ -87,7 +81,7 @@ std(mv::MeanVariance{1}) = sqrt(var(mv))
 # vector
 #
 mean(mv::MeanVariance) = _mean(mv)
-cov(mv::MeanVariance) = _mean(mv)
+cov(mv::MeanVariance) = _cov(mv)
 var(mv::MeanVariance) = _var(mv)
 
 @inline function _update!(mv::MeanVariance, x::AbstractVector{R}) where R<:Real
@@ -104,7 +98,7 @@ var(mv::MeanVariance) = _var(mv)
 end
 
 # batch update
-function _update_batch!(mv::MeanVariance, x::AbstractMatrix{R}) where R<:Real
+function _update!(mv::MeanVariance, x::AbstractMatrix{R}) where R<:Real
     N = mv.N
     M = size(x, 2)
 
@@ -114,8 +108,7 @@ function _update_batch!(mv::MeanVariance, x::AbstractMatrix{R}) where R<:Real
     # if M has a variance, else this is [0]
     if M > 1
         centeredx = x .- μx
-        Sx = A_mul_Bt(centeredx, centeredx)
-        mv.S += Sx
+        mv.S += outer(centeredx, centeredx)
     end
 
     # becomes infinite b/c of N == 0
@@ -145,6 +138,15 @@ mutable struct Diagnostic <: OnlineStatistic{Tuple{1}}
     end
 end
 
+update!(d::Diagnostic, w::Real) = _update!(d, w)
+function update!(d::Diagnostic, ws::Vector{R}) where R<:Real
+    for i = 1:length(ws)
+        _update!(d, ws[i])
+    end
+
+    return d
+end
+
 _update!(d::Diagnostic, w::AbstractVector{R}) where R<:Real = _update!(d, first(w))
 @inline function _update!(d::Diagnostic, w::Real)
     d.N += 1
@@ -170,36 +172,69 @@ neγ(d::Diagnostic) = skew_eff_sample_size(d)
 ##########################################################################################
 #                   Control Variates
 ##########################################################################################
-mutable struct ControlVariate{D1, D2} <: OnlineStatistic{Tuple{D1, D2}}
+mutable struct ControlVariate{Df, Dg} <: OnlineStatistic{Tuple{Df, Dg}}
     N::Int
-    β::Vector{Float64}
-    fmv::MeanVariance{D2}
-    gmv::MeanVariance{D1}
-    C::Matrix{Float64}
+    β::Matrix{Float64}
+    mf::Vector{Float64}
+    mg::Vector{Float64}
+    Sg::Matrix{Float64}
+    Cgf::Matrix{Float64}
 
-    function ControlVariate{D1, D2}() where {D1, D2}
-        (isa(D1, Int) && D1 > 0) || error("D1 must be an integer greater than 0")
-        (isa(D2, Int) && D2 > 0) || error("D2 must be an integer greater than 0")
-        return new(0, zeros(D))
+    function ControlVariate{Df, Dg}() where {Df, Dg}
+        (isa(Df, Int) && Df > 0) || error("Df must be an integer greater than 0")
+        (isa(Dg, Int) && Dg > 0) || error("Dg must be an integer greater than 0")
+        return new(0, zeros(Dg, Df), zeros(Df), zeros(Dg), zeros(Dg, Dg), zeros(Dg, Df))
     end
 end
 
-ControlVariate(D1::Int, D2::Int) = ControlVariate{D1, D2}()
+ControlVariate(Df::Int, Dg::Int) = ControlVariate{Df, Dg}()
 
-function _update!(cv::ControlVariate, g::Union{<:Real, AbstractVector{<:Real}},
-        f::Union{<:Real, AbstractVector{<:Real}}, _...)
-    length(x) == D ||
-        throw(DimensionMismatch("Sample size inconsistent with statistic length."))
-    mv.N += 1
-    N = mv.N
-    mv.m += x
+function _update!(cv::ControlVariate, f::AbstractVector{R1},
+        g::AbstractVector{R2}) where {R1<:Real, R2<:Real}
 
-    # for N == 1, x == μnew, so the update is [0]
+    cv.N += 1
+    N = cv.N
+    cv.mf += f
+    cv.mg += g
+
     if N > 1
-        mv.S += outer(N*x - mv.m) / (N*(N-1))
+        cv.Sg += outer(N*g - cv.mg) / (N*(N-1))
+        cv.Sg += outer(N*g - cv.mg, N*f - cv.mf) / (N*(N-1))
     end
+
+    cv.β = cv.Sg \ cv.Cgf
+
+    return cv
+end
+
+# batch update
+function _update!(cv::ControlVariate, fs::AbstractMatrix{R1},
+        gs::AbstractMatrix{R2}) where {R1<:Real, R2<:Real}
+    N = cv.N
+    M = size(fs, 2)
+
+    sumf = vec(sum(fs, 2))
+    sumg = vec(sum(gs, 2))
+    μf = sumf / M
+    μg = sumg / M
+
+    # if M has a variance, else this is [0]
+    if M > 1
+        centeredf = fs.- μf
+        centeredg = gs.- μg
+        cv.Sg += outer(centeredg, centeredg)
+        cv.Cgf += outer(centeredg, centeredf)
+    end
+
+    # becomes infinite b/c of N == 0
+    if N > 0
+        cv.S += M/(N*(M+N)) * outer(N*μg - cv.mg, N*μf - cv.mf)
+    end
+
+    cv.mf += sumf
+    cv.mg += sumg
+    cv.N += M
+    cv.β = cv.Sg \ cv.Cgf
 
     return mv
-end
-
 end
