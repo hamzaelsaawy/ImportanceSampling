@@ -69,7 +69,7 @@ logpdf(d::MixtureDistribution{Univariate}, x::Real) =
 pdf(d::MixtureDistribution{Univariate}, x::Real) = exp(logpdf(d, x))
 
 # multivariate
-function _logpdf(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) where T<:Real
+@inline function _logpdf(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) where T<:Real
     t = Vector{Float64}(ncomponents(d))
 
     for j in 1:ncomponents(d)
@@ -79,7 +79,8 @@ function _logpdf(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) whe
     return logsumexp(d.log_priors .+ t)
 end
 
-function _logpdf!(r::AbstractArray, d::MixtureDistribution{Multivariate}, x::AbstractMatrix{T}) where T<:Real
+@inline function _logpdf!(r::AbstractArray, d::MixtureDistribution{Multivariate},
+        x::AbstractMatrix{T}) where T<:Real
     t = Matrix{Float64}(size(x, 2), ncomponents(d))
 
     for j in 1:ncomponents(d)
@@ -96,7 +97,7 @@ function _logpdf!(r::AbstractArray, d::MixtureDistribution{Multivariate}, x::Abs
 end
 
 # matrixvariate
-function _logpdf(d::MixtureDistribution{Matrixvariate}, x::AbstractMatrix)
+@inline function _logpdf(d::MixtureDistribution{Matrixvariate}, x::AbstractMatrix)
     t = Vector{Float64}(ncomponents(d))
 
     for j in 1:ncomponents(d)

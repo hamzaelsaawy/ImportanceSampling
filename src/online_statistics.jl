@@ -2,43 +2,52 @@
 # Compute Statistics Online
 #
 
-export OnlineStatistic, update!,
+export OnlineStatistic, update!, update_batch,
     MeanVariance,
     Diagnostic,
     mean_eff_sample_size, ne, eff_sample_size, neμ,
     var_eff_sample_size, neσ, skew_eff_sample_size, neγ
 
-abstract type OnlineStatistic{D} end
+abstract type OnlineStatistic{S<:Tuple} end
 
-#
-# scalar
-#
-update!(os::OnlineStatistic{1}, x::Real) = _update!(os, x)
-update!(os::OnlineStatistic{1}, x::AbstractVector{R}) where R<:Real =
-        _update_batch!(os, reshape(x, 1, length(x)))
+size(os::OnlineStatistic{S}) where S<:Tuple = tuple(S.parameters...)
+ndims(os::OnlineStatistic{S}) where S<:Tuple = length(S.parameters)
 
-#
-# vector
-#
-function update!(os::OnlineStatistic{D}, x::AbstractVector{R}) where {D, R<:Real}
-    length(x) == D ||
-        throw(DimensionMismatch("Sample size inconsistent with statistic length."))
+function update!(os::OnlineStatistic, xs::Union{<:Real, AbstractVector{<:Real}}...)
+    ndims(os) == length(xs) ||
+        throw(DimensionMismatch("Number of samples not equal to number of dimensions"))
 
-    _update!(os, x)
+    xs = [xs...]
+    are_scalars = ndims.(xs) == 0
+    xs[are_scalars] = map(x -> [x], xs[are_scalars]
+
+    all(size(os) .== length.(xs)) ||
+        throw(DimensionMismatch("Sample sizes inconsistent with dimension lengths."))
+
+    _update!(os, xs...)
 end
 
-# for batch updates
-function update!(os::OnlineStatistic{D}, x::AbstractMatrix{R}) where {D, R<:Real}
-    size(x, 1) == D ||
-        throw(DimensionMismatch("Sample size inconsistent with statistic length."))
+function update_batch!(os::OnlineStatistic, xs::AbstractVecOrMat{R}...) where R<:Real
+    ndims(os) == length(xs) ||
+        throw(DimensionMismatch("Number of samples not equal to number of dimensions"))
 
-    _update_batch!(os, x)
+    xs = [xs...]
+    are_vectors = ndims.(xs) == 1
+    xs[are_vectors] = map(x -> reshape(x, 1, length(x)), xs[are_vectors])
+
+    all(size(os) .== size.(xs, 1)) ||
+        throw(DimensionMismatch("Sample sizes inconsistent with dimension lengths."))
+
+    all_equal(size.(xs, 2)) ||
+        throw(DimensionMismatch("Samples should have the same number of observations."))
+
+    _update_batch!(os, xs...)
 end
 
 # default implementation
-function _update_batch!(os::OnlineStatistic, x::AbstractMatrix{R}) where R<:Real
+@inline function _update_batch!(os::OnlineStatistic, xs::AbstractMatrix{R}...) where R<:Real
     for i = 1:size(x, 2)
-        _update!(os, view(x, :, i))
+        _update!(os, map(x -> view(x, :, i), xs)...)
     end
 
     return os
@@ -48,7 +57,7 @@ end
 #                   Mean & Variance
 # see "Updating Formulae and a Pairwise Algorithm for Computing Sample Variances" Chang & Golub
 ##########################################################################################
-mutable struct MeanVariance{D} <: OnlineStatistic{D}
+mutable struct MeanVariance{D} <: OnlineStatistic{Tuple{D}}
     N::Int
     m::Vector{Float64}
     S::Matrix{Float64}
@@ -61,8 +70,6 @@ mutable struct MeanVariance{D} <: OnlineStatistic{D}
 end
 
 MeanVariance(D::Int) = MeanVariance{D}()
-
-size(mv::MeanVariance{D}) where D = D
 
 _mean(mv::MeanVariance{D}) where D = (mv.N ≥ 1) ? mv.m/mv.N : fill(NaN, D)
 _cov(mv::MeanVariance{D}) where D = (mv.N ≥ 2) ? mv.S / (mv.N-1) : fill(NaN, D, D)
@@ -83,7 +90,7 @@ mean(mv::MeanVariance) = _mean(mv)
 cov(mv::MeanVariance) = _mean(mv)
 var(mv::MeanVariance) = _var(mv)
 
-function _update!(mv::MeanVariance, x::Union{<:Real, AbstractVector{<:Real}})
+@inline function _update!(mv::MeanVariance, x::AbstractVector{R}) where R<:Real
     mv.N += 1
     N = mv.N
     mv.m += x
@@ -126,7 +133,7 @@ end
 #                   Diagnostics
 # See Stanford Stats 362: Monte Carlo with Art Owen
 ##########################################################################################
-mutable struct Diagnostic <: OnlineStatistic{1}
+mutable struct Diagnostic <: OnlineStatistic{Tuple{1}}
     N::Int
     sumw::Float64
     sumw2::Float64
@@ -139,7 +146,7 @@ mutable struct Diagnostic <: OnlineStatistic{1}
 end
 
 _update!(d::Diagnostic, w::AbstractVector{R}) where R<:Real = _update!(d, first(w))
-function _update!(d::Diagnostic, w::Real)
+@inline function _update!(d::Diagnostic, w::Real)
     d.N += 1
     d.sumw += w
     d.sumw2 += w^2
@@ -163,14 +170,36 @@ neγ(d::Diagnostic) = skew_eff_sample_size(d)
 ##########################################################################################
 #                   Control Variates
 ##########################################################################################
-mutable struct ControlVariate{D} <: OnlineStatistic{D}
+mutable struct ControlVariate{D1, D2} <: OnlineStatistic{Tuple{D1, D2}}
     N::Int
     β::Vector{Float64}
+    fmv::MeanVariance{D2}
+    gmv::MeanVariance{D1}
+    C::Matrix{Float64}
 
-    function ControlVariate{D}() where D
-        (isa(D, Int) && D > 0) || error("D must be an integer greater than 0")
+    function ControlVariate{D1, D2}() where {D1, D2}
+        (isa(D1, Int) && D1 > 0) || error("D1 must be an integer greater than 0")
+        (isa(D2, Int) && D2 > 0) || error("D2 must be an integer greater than 0")
         return new(0, zeros(D))
     end
 end
 
-ControlVariate(D::Int) = ControlVariate{D}()
+ControlVariate(D1::Int, D2::Int) = ControlVariate{D1, D2}()
+
+function _update!(cv::ControlVariate, g::Union{<:Real, AbstractVector{<:Real}},
+        f::Union{<:Real, AbstractVector{<:Real}}, _...)
+    length(x) == D ||
+        throw(DimensionMismatch("Sample size inconsistent with statistic length."))
+    mv.N += 1
+    N = mv.N
+    mv.m += x
+
+    # for N == 1, x == μnew, so the update is [0]
+    if N > 1
+        mv.S += outer(N*x - mv.m) / (N*(N-1))
+    end
+
+    return mv
+end
+
+end
