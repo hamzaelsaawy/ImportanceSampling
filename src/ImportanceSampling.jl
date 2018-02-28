@@ -1,4 +1,8 @@
-module ImportanceSamplers
+#
+# Importance Sampling main module
+#
+
+module ImportanceSampling
 
 using Distributions
 
@@ -11,7 +15,7 @@ import Distributions: probs, ncomponents, components, _rand!,
         pdf, logpdf, _logpdf, _logpdf!
 
 include("auxiliary.jl")
-include("online_statistics.jl")
 include("mixture_distribution.jl")
+include("online_statistics.jl")
 
 end

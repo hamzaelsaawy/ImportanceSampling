@@ -1,22 +1,22 @@
 #
-# A Mixture Distribution for Q sampling
+# mixture distribution for importance sampling
 #
 
 export MixtureDistribution
 
 struct MixtureDistribution{F<:VariateForm, S<:ValueSupport} <: Distribution{F, S}
     components::Vector{D} where D<:Distribution{F, S}
-    priors::ProbabilityWeights
-    log_priors::Vector{Float64}
+    prior::ProbabilityWeights
+    log_prior::Vector{Float64}
 
     function MixtureDistribution{F, S}(
-            components::AbstractArray{DD}, priors::AbstractArray{R}) where
+            components::AbstractArray{DD}, prior::AbstractArray{R}) where
             {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}, R<:Real}
-        (length(priors) == length(components)) ||
-                error("must be the same number of components and priors")
+        (length(prior) == length(components)) ||
+                error("must be the same number of components and prior")
 
-        all(α -> α ≥ 0, priors) || error("priors must be ≥ 0")
-        _priors = ProbabilityWeights(vec(collect(priors))/sum(priors), 1.0)
+        all(α -> α ≥ 0, prior) || error("prior must be ≥ 0")
+        _prior = ProbabilityWeights(vec(collect(prior))/sum(prior), 1.0)
 
         _components = vec(components)
         all_equal(size, _components) || error("components must have the same size")
@@ -27,13 +27,13 @@ struct MixtureDistribution{F<:VariateForm, S<:ValueSupport} <: Distribution{F, S
         #(F == Univariate) && ( all_equal(support, _components) ||
         #       error("Distributions must share the same support") )
 
-        return new(_components, _priors, log.(_priors))
+        return new(_components, _prior, log.(_prior))
     end
 end
 
-MixtureDistribution(components::AbstractArray{DD}, priors::AbstractArray{R}) where
+MixtureDistribution(components::AbstractArray{DD}, prior::AbstractArray{R}) where
         {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}, R<:Real} =
-        MixtureDistribution{F, S}(components, priors)
+        MixtureDistribution{F, S}(components, prior)
 
 MixtureDistribution(components::AbstractArray{DD}) where
         {F<:VariateForm, S<:ValueSupport, DD<:Distribution{F, S}} =
@@ -45,27 +45,27 @@ for fun in Symbol.(["length", "size", "eltype"])
     end )
 end
 
-probs(d::MixtureDistribution) = d.priors.values
+probs(d::MixtureDistribution) = d.prior.values
 ncomponents(d::MixtureDistribution) = length(d.components)
 components(d::MixtureDistribution) = d.components
 
 #
 # rand
 #
-rand(d::MixtureDistribution{Univariate}) = rand(d.components[sample(d.priors)])
+rand(d::MixtureDistribution{Univariate}) = rand(d.components[sample(d.prior)])
 
 _rand!(d::MixtureDistribution{Multivariate}, x::AbstractVector{T}) where T<:Real =
-        _rand!(d.components[sample(d.priors)], x)
+        _rand!(d.components[sample(d.prior)], x)
 
 _rand!(d::MixtureDistribution{Matrixvariate}, x::AbstractMatrix{T}) where T<:Real =
-        _rand!(d.components[sample(d.priors)], x)
+        _rand!(d.components[sample(d.prior)], x)
 
 #
 # (log) pdf
 #
 # univariate
 logpdf(d::MixtureDistribution{Univariate}, x::Real) =
-        logsumexp(d.log_priors + logpdf.(d.components, x))
+        logsumexp(d.log_prior + logpdf.(d.components, x))
 pdf(d::MixtureDistribution{Univariate}, x::Real) = exp(logpdf(d, x))
 
 # multivariate
@@ -76,7 +76,7 @@ pdf(d::MixtureDistribution{Univariate}, x::Real) = exp(logpdf(d, x))
         @inbounds t[j] = _logpdf(d.components[j], x)
     end
 
-    return logsumexp(d.log_priors .+ t)
+    return logsumexp(d.log_prior .+ t)
 end
 
 @inline function _logpdf!(r::AbstractArray, d::MixtureDistribution{Multivariate},
@@ -87,7 +87,7 @@ end
         _logpdf!(view(t, :, j), d.components[j], x)
     end
 
-    t .+= d.log_priors'
+    t .+= d.log_prior'
 
     for i in 1:size(x, 2)
         @inbounds r[i] = logsumexp(t[i, :])
@@ -104,7 +104,7 @@ end
         @inbounds t[j] = _logpdf(d.components[j], x)
     end
 
-    return logsumexp(d.log_priors .+ t)
+    return logsumexp(d.log_prior .+ t)
 end
 
 #
@@ -112,7 +112,7 @@ end
 #
 function show(io::IO, d::MixtureDistribution)
     println(io, string(typeof(d)))
-    println(io, "prior: ", d.priors)
+    println(io, "prior: ", d.prior)
     println(io, "components:")
     println.(io, d.components)
 end

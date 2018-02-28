@@ -3,7 +3,8 @@
 #
 
 export OnlineStatistic, update!,
-    MeanVariance, ControlVariate,
+    MeanVariance,
+    ControlVariate, β, coeffs,
     Diagnostic,
     mean_eff_sample_size, ne, eff_sample_size, neμ,
     var_eff_sample_size, neσ, skew_eff_sample_size, neγ
@@ -123,6 +124,92 @@ function _update!(mv::MeanVariance, x::AbstractMatrix{R}) where R<:Real
 end
 
 ##########################################################################################
+#                   Control Variates
+##########################################################################################
+mutable struct ControlVariate{Df, Dg} <: OnlineStatistic{Tuple{Df, Dg}}
+    N::Int
+    β::Matrix{Float64}
+    mf::Vector{Float64}
+    mg::Vector{Float64}
+    Sg::Matrix{Float64}
+    Cgf::Matrix{Float64}
+
+    function ControlVariate{Df, Dg}() where {Df, Dg}
+        (isa(Df, Int) && Df > 0) || error("Df must be an integer greater than 0")
+        (isa(Dg, Int) && Dg > 0) || error("Dg must be an integer greater than 0")
+        return new(0, zeros(Dg, Df), zeros(Df), zeros(Dg), zeros(Dg, Dg), zeros(Dg, Df))
+    end
+end
+
+ControlVariate(Df::Int, Dg::Int) = ControlVariate{Df, Dg}()
+
+β(cv::ControlVariate) = cv.β
+coeffs(cv::ControlVariate) = β(cv)
+cov(cv::ControlVariate) = (cv.N ≥ 2) ? cv.Cgf / (cv.N-1) : fill(NaN, size(cv))
+
+function _update!(cv::ControlVariate, f::AbstractVector{R1},
+        g::AbstractVector{R2}) where {R1<:Real, R2<:Real}
+
+    cv.N += 1
+    N = cv.N
+    cv.mf += f
+    cv.mg += g
+
+    if N > 1
+        cv.Sg += outer(N*g - cv.mg) / (N*(N-1))
+        cv.Cgf += outer(N*g - cv.mg, N*f - cv.mf) / (N*(N-1))
+    end
+
+    βold = cv.β
+    try
+        cv.β = cv.Sg \ cv.Cgf
+    catch
+        cv.β = βold
+    end
+
+    return cv
+end
+
+# batch update
+function _update!(cv::ControlVariate, fs::AbstractMatrix{R1},
+        gs::AbstractMatrix{R2}) where {R1<:Real, R2<:Real}
+    N = cv.N
+    M = size(fs, 2)
+
+    sumf = vec(sum(fs, 2))
+    sumg = vec(sum(gs, 2))
+    μf = sumf / M
+    μg = sumg / M
+
+    # if M has a variance, else this is [0]
+    if M > 1
+        centeredf = fs.- μf
+        centeredg = gs.- μg
+        cv.Sg += outer(centeredg, centeredg)
+        cv.Cgf += outer(centeredg, centeredf)
+    end
+
+    # becomes infinite b/c of N == 0
+    if N > 0
+        cv.Sg += M / (N*(M+N)) * outer(N*μg - cv.mg)
+        cv.Cgf += M / (N*(M+N)) * outer(N*μg - cv.mg, N*μf - cv.mf)
+    end
+
+    cv.mf += sumf
+    cv.mg += sumg
+    cv.N += M
+
+    βold = cv.β
+    try
+        cv.β = cv.Sg \ cv.Cgf
+    catch
+        cv.β = βold
+    end
+
+    return mv
+end
+
+##########################################################################################
 #                   Diagnostics
 # See Stanford Stats 362: Monte Carlo with Art Owen
 ##########################################################################################
@@ -168,73 +255,3 @@ neσ(d::Diagnostic) = var_eff_sample_size(d)
 
 skew_eff_sample_size(d::Diagnostic) = d.sumw2^3/d.sumw3^2
 neγ(d::Diagnostic) = skew_eff_sample_size(d)
-
-##########################################################################################
-#                   Control Variates
-##########################################################################################
-mutable struct ControlVariate{Df, Dg} <: OnlineStatistic{Tuple{Df, Dg}}
-    N::Int
-    β::Matrix{Float64}
-    mf::Vector{Float64}
-    mg::Vector{Float64}
-    Sg::Matrix{Float64}
-    Cgf::Matrix{Float64}
-
-    function ControlVariate{Df, Dg}() where {Df, Dg}
-        (isa(Df, Int) && Df > 0) || error("Df must be an integer greater than 0")
-        (isa(Dg, Int) && Dg > 0) || error("Dg must be an integer greater than 0")
-        return new(0, zeros(Dg, Df), zeros(Df), zeros(Dg), zeros(Dg, Dg), zeros(Dg, Df))
-    end
-end
-
-ControlVariate(Df::Int, Dg::Int) = ControlVariate{Df, Dg}()
-
-function _update!(cv::ControlVariate, f::AbstractVector{R1},
-        g::AbstractVector{R2}) where {R1<:Real, R2<:Real}
-
-    cv.N += 1
-    N = cv.N
-    cv.mf += f
-    cv.mg += g
-
-    if N > 1
-        cv.Sg += outer(N*g - cv.mg) / (N*(N-1))
-        cv.Sg += outer(N*g - cv.mg, N*f - cv.mf) / (N*(N-1))
-    end
-
-    cv.β = cv.Sg \ cv.Cgf
-
-    return cv
-end
-
-# batch update
-function _update!(cv::ControlVariate, fs::AbstractMatrix{R1},
-        gs::AbstractMatrix{R2}) where {R1<:Real, R2<:Real}
-    N = cv.N
-    M = size(fs, 2)
-
-    sumf = vec(sum(fs, 2))
-    sumg = vec(sum(gs, 2))
-    μf = sumf / M
-    μg = sumg / M
-
-    # if M has a variance, else this is [0]
-    if M > 1
-        centeredf = fs.- μf
-        centeredg = gs.- μg
-        cv.Sg += outer(centeredg, centeredg)
-        cv.Cgf += outer(centeredg, centeredf)
-    end
-
-    # becomes infinite b/c of N == 0
-    if N > 0
-        cv.S += M/(N*(M+N)) * outer(N*μg - cv.mg, N*μf - cv.mf)
-    end
-
-    cv.mf += sumf
-    cv.mg += sumg
-    cv.N += M
-    cv.β = cv.Sg \ cv.Cgf
-
-    return mv
-end

@@ -1,5 +1,5 @@
 #
-# Helper functions
+# helper functions
 #
 
 all_equal(f, xs) = all(x -> f(x) == f(first(xs)), xs[2:end])
