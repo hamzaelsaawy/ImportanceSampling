@@ -6,7 +6,7 @@ module ImportanceSampling
 
 using Distributions
 
-import Base: show, size, ndims, mean, cov, var, std
+import Base: show, size, length, ndims, mean, cov, var, std
 import Base.Random: rand
 
 import StatsBase: ProbabilityWeights, pweights, sample
@@ -17,5 +17,6 @@ import Distributions: probs, ncomponents, components, _rand!,
 include("auxiliary.jl")
 include("mixture_distribution.jl")
 include("online_statistics.jl")
+include("importance_sampler.jl")
 
 end

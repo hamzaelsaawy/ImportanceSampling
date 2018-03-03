@@ -12,7 +12,7 @@ export OnlineStatistic, update!,
 abstract type OnlineStatistic{S<:Tuple} end
 
 size(os::OnlineStatistic{S}) where S<:Tuple = tuple(S.parameters...)
-length(os::OnlineStatistic) = prod(size(os))
+length(os::OnlineStatistic{S}) where S<:Tuple = prod(S.parameters)
 ndims(os::OnlineStatistic{S}) where S<:Tuple = length(S.parameters)
 
 # single value update

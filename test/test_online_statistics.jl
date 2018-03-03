@@ -16,8 +16,8 @@
             update!(mv, x[:, i])
         end
 
-        @test approx_eqaul([mean(mv), var(mv), std(mv)],
-                first.([mean(x), var(x), std(x)]))
+        @test isapprox([mean(mv), var(mv), std(mv)],
+                first.([mean(x), var(x), std(x)]), 1e-14)
     end
 
     @testset "2" begin
@@ -37,9 +37,9 @@
             update!(mv, x[:, i])
         end
 
-        @test approx_eqaul(mean(mv), mean(x, 2))
-        @test approx_eqaul(var(mv), var(x, 2))
-        @test approx_eqaul(cov(mv), cov(x, 2))
+        @test isapprox(mean(mv), mean(x, 2), 1e-14)
+        @test isapprox(var(mv), var(x, 2), 1e-14)
+        @test isapprox(cov(mv), cov(x, 2), 1e-14)
     end
 
     @testset "3" begin
@@ -50,9 +50,9 @@
             update!(mv, x[:, i:(i+1)])
         end
 
-        @test approx_eqaul(mean(mv), mean(x, 2))
-        @test approx_eqaul(var(mv), var(x, 2))
-        @test approx_eqaul(cov(mv), cov(x, 2))
+        @test isapprox(mean(mv), mean(x, 2), 1e-14)
+        @test isapprox(var(mv), var(x, 2), 1e-14)
+        @test isapprox(cov(mv), cov(x, 2), 1e-14)
     end
 end
 
@@ -67,9 +67,10 @@ end
     for i in 751:1000
         update!(d, ws[i])
     end
-    @test approx_eqaul([ne(d) - sum(ws)^2/(sum(abs2, ws)),
-        neσ(d) - sum(abs2, ws)^2/(sum(ws.^4)),
-        neγ(d) - sum(abs2, ws)^3/(sum(ws.^3)^2)])
+    @test isapprox([ne(d), neσ(d), neγ(d)],
+        [sum(ws)^2/(sum(abs2, ws)),
+        sum(abs2, ws)^2/(sum(ws.^4)),
+        sum(abs2, ws)^3/(sum(ws.^3)^2)], 1e-15)
 end
 
 @testset "ControlVariates" begin
@@ -97,8 +98,8 @@ end
         end
         update!(cv, fs[:,751:1000], gs[:,751:1000])
 
-        @test approx_eqaul(coeffs(cv), β)
-        @test approx_eqaul(cov(cv), C)
+        @test isapprox(coeffs(cv), β, 1e-14)
+        @test isapprox(cov(cv), C, 1e-14)
     end
 
     @testset "2" begin
@@ -121,8 +122,8 @@ end
         end
         update!(cv, fs[:,751:1000], gs[:,751:1000])
 
-        @test approx_eqaul(coeffs(cv), β)
-        @test approx_eqaul(cov(cv), C)
+        @test isapprox(coeffs(cv), β, 1e-14)
+        @test isapprox(cov(cv), C, 1e-14)
     end
 
     @testset "3" begin
@@ -138,7 +139,7 @@ end
             update!(cv, fs[:, i:(i+j)], gs[:, i:(i+j)])
         end
 
-        @test approx_eqaul(coeffs(cv), β)
+        @test isapprox(coeffs(cv), β, 1e-14)
     end
 end
 
