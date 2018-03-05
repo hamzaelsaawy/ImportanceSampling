@@ -42,7 +42,7 @@ end
 
 # default implementation
 @inline function _update!(os::OnlineStatistic, xs::AbstractMatrix{R}...) where R<:Real
-    for i = 1:size(x, 2)
+    for i = 1:size(first(xs), 2)
         _update!(os, map(x -> view(x, :, i), xs)...)
     end
 

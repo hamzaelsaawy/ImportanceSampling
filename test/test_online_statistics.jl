@@ -17,7 +17,7 @@
         end
 
         @test isapprox([mean(mv), var(mv), std(mv)],
-                first.([mean(x), var(x), std(x)]), 1e-14)
+                first.([mean(x), var(x), std(x)]))
     end
 
     @testset "2" begin
@@ -37,9 +37,9 @@
             update!(mv, x[:, i])
         end
 
-        @test isapprox(mean(mv), mean(x, 2), 1e-14)
-        @test isapprox(var(mv), var(x, 2), 1e-14)
-        @test isapprox(cov(mv), cov(x, 2), 1e-14)
+        @test isapprox(mean(mv), mean(x, 2))
+        @test isapprox(var(mv), var(x, 2))
+        @test isapprox(cov(mv), cov(x, 2))
     end
 
     @testset "3" begin
@@ -50,27 +50,46 @@
             update!(mv, x[:, i:(i+1)])
         end
 
-        @test isapprox(mean(mv), mean(x, 2), 1e-14)
-        @test isapprox(var(mv), var(x, 2), 1e-14)
-        @test isapprox(cov(mv), cov(x, 2), 1e-14)
+        @test isapprox(mean(mv), mean(x, 2))
+        @test isapprox(var(mv), var(x, 2))
+        @test isapprox(cov(mv), cov(x, 2))
     end
 end
 
 @testset "Diagnostics" begin
-    N = 1000
-    ws = abs.(randn(N) ./ randn(N))
-    d = Diagnostic()
-    for i in 1:5:500
-        update!(d, ws[i:(i+4)])
+    @testset "1" begin
+        N = 1000
+        ws = abs.(randn(N) ./ randn(N))
+        d = Diagnostic()
+        for i in 1:5:500
+            update!(d, ws[i:(i+4)])
+        end
+        update!(d, ws[501:750])
+        for i in 751:1000
+            update!(d, ws[i])
+        end
+        @test isapprox([ne(d), neσ(d), neγ(d)],
+            [sum(ws)^2/(sum(abs2, ws)),
+            sum(abs2, ws)^2/(sum(ws.^4)),
+            sum(abs2, ws)^3/(sum(ws.^3)^2)])
     end
-    update!(d, ws[501:750])
-    for i in 751:1000
-        update!(d, ws[i])
+
+    @testset "2" begin # matrix version
+        N = 1000
+        ws = abs.(randn(1, N) ./ randn(1, N))
+        d = Diagnostic()
+        for i in 1:5:500
+            update!(d, ws[i:(i+4)])
+        end
+        update!(d, ws[501:750])
+        for i in 751:1000
+            update!(d, ws[i])
+        end
+        @test isapprox([ne(d), neσ(d), neγ(d)],
+            [sum(ws)^2/(sum(abs2, ws)),
+            sum(abs2, ws)^2/(sum(ws.^4)),
+            sum(abs2, ws)^3/(sum(ws.^3)^2)])
     end
-    @test isapprox([ne(d), neσ(d), neγ(d)],
-        [sum(ws)^2/(sum(abs2, ws)),
-        sum(abs2, ws)^2/(sum(ws.^4)),
-        sum(abs2, ws)^3/(sum(ws.^3)^2)], 1e-15)
 end
 
 @testset "ControlVariates" begin
@@ -98,8 +117,8 @@ end
         end
         update!(cv, fs[:,751:1000], gs[:,751:1000])
 
-        @test isapprox(coeffs(cv), β, 1e-14)
-        @test isapprox(cov(cv), C, 1e-14)
+        @test isapprox(coeffs(cv), β)
+        @test isapprox(cov(cv), C)
     end
 
     @testset "2" begin
@@ -122,8 +141,8 @@ end
         end
         update!(cv, fs[:,751:1000], gs[:,751:1000])
 
-        @test isapprox(coeffs(cv), β, 1e-14)
-        @test isapprox(cov(cv), C, 1e-14)
+        @test isapprox(coeffs(cv), β)
+        @test isapprox(cov(cv), C)
     end
 
     @testset "3" begin
@@ -139,7 +158,7 @@ end
             update!(cv, fs[:, i:(i+j)], gs[:, i:(i+j)])
         end
 
-        @test isapprox(coeffs(cv), β, 1e-14)
+        @test isapprox(coeffs(cv), β)
     end
 end
 

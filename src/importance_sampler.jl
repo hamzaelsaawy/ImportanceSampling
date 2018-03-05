@@ -18,9 +18,10 @@ function update!(is::AbstractImportanceSampler;
     isFvoid = isa(F, Void)
     isWvoid = isa(W, Void)
 
-    X = _reshape_vector(X)
-    F = _reshape_vector(F)
-    W = _reshape_vector(W)
+    # make sure X, F, W are matrices (1 × something even)
+    X = reshape_vector(X)
+    F = reshape_vector(F)
+    W = reshape_vector(W)
 
     # dimensions checking
     isXvoid || size(X, 1) == length(is.q) ||
@@ -35,8 +36,10 @@ function update!(is::AbstractImportanceSampler;
     all_equal( size.(filter(A -> !isa(A, Void), [X, F, W]), 2) ) ||
         error("X, F, and W must all have the same number of observations")
 
+    # decide if we need to sample X
+    sample = false
     if isXvoid
-        xor(isFvoid, isWvoid)
+        xor(isFvoid, isWvoid) &&
             error("both F or W must be provided if X is not")
 
         # no data passed, so pretty up batching and iters
@@ -50,16 +53,19 @@ function update!(is::AbstractImportanceSampler;
             niters == 0 && (niters = Int(batchsize*nbatches))
             nbatches == 0 && ((niters, nbatches) = round_div(niters, batchsize))
             batchsize == 0 && ((niters, batchsize) = round_div(niters, nbatches))
+
+            sample = true
         end
     end
 
 
-    return _update!(is, X, F, W, niters, nbatches, batchsize; kwds...)
+    return _update!(Val{sample}(), is, X, F, W, niters, nbatches, batchsize; kwds...)
 end
 
 mean(is::AbstractImportanceSampler) = mean(is.μ)
-cov(is::AbstractImportanceSampler) = cov(is.μ)
-var(is::AbstractImportanceSampler) = var(is.μ)
+# divide by N to get estimator (co)var, not sample
+cov(is::AbstractImportanceSampler) = cov(is.μ) / is.μ.N
+var(is::AbstractImportanceSampler) = var(is.μ) / is.μ.N
 
 proposal(is::AbstractImportanceSampler) = is.q
 
@@ -94,13 +100,13 @@ calcF(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
 end
 
 calcW(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
-    calcW!(Vector{Float64}(size(X, 2)), is, X)
+    calcW!(Matrix{Float64}(1, size(X, 2)), is, X)
 
-@inline function calcW!(W::Vector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+@inline function calcW!(W::Matrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
     n = size(X, 2)
 
     for i in 1:n
-        @inbounds W[i] = is.w(view(X, :, i))
+        @inbounds W[1, i] = is.w(view(X, :, i))
     end
 
     return W
@@ -130,8 +136,20 @@ mutable struct ImportanceSampler <: AbstractImportanceSampler
     end
 end
 
-function _update!(is::ImportanceSampler,
-        X::AbstractMatrix{<:Real},
+function core_update(is::ImportanceSampler,
+    F::AbstractMatrix{<:Real},
+    W::AbstractMatrix{<:Real})
+
+    F .*= W
+    update!(is.μ, F)
+    update!(is.d, W)
+
+    return is
+end
+
+function _update!(::Val{false},
+        is::ImportanceSampler,
+        X::Union{Void, AbstractMatrix{<:Real}},
         F::Union{Void, AbstractMatrix{<:Real}},
         W::Union{Void, AbstractMatrix{<:Real}},
         niters::Int, nbatches::Int, batchsize::Int;
@@ -142,7 +160,30 @@ function _update!(is::ImportanceSampler,
     isa(F, Void) && (F = calcF(is, X))
     isa(W, Void) && (W = calcW(is, X))
 
-    F .*= W'
-    update!(is.μ, F)
-    update!(is.d, W)
+    return core_update(is, F, W)
+end
+
+function _update!(::Val{true},
+        is::ImportanceSampler,
+        X::Union{Void, AbstractMatrix{<:Real}},
+        F::Union{Void, AbstractMatrix{<:Real}},
+        W::Union{Void, AbstractMatrix{<:Real}},
+        niters::Int, nbatches::Int, batchsize::Int;
+        updateμ::Bool=true, _...)
+
+    updateμ || return
+
+    X = zeros(length(is.q), nbatches)
+    F = zeros(length(is.μ), nbatches)
+    W = zeros(1, nbatches)
+
+    for _ in 1:nbatches
+        rand!(is.q, X)
+        calcF!(F, is, X)
+        calcW!(W, is, X)
+
+        core_update(is, F, W)
+    end
+
+    return is
 end
