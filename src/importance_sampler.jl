@@ -67,6 +67,13 @@ mean(is::AbstractImportanceSampler) = mean(is.μ)
 cov(is::AbstractImportanceSampler) = cov(is.μ) / is.μ.N
 var(is::AbstractImportanceSampler) = var(is.μ) / is.μ.N
 
+for fun in Symbol.(["mean_eff_sample_size", "ne", "eff_sample_size", "neμ",
+    "var_eff_sample_size", "neσ", "skew_eff_sample_size", "neγ"])
+    eval( quote
+        $(fun)(is::AbstractImportanceSampler) = $(fun)(diagnostics(is))
+    end )
+end
+
 proposal(is::AbstractImportanceSampler) = is.q
 
 diagnostics(is::AbstractImportanceSampler) = is.d
@@ -173,9 +180,9 @@ function _update!(::Val{true},
 
     updateμ || return
 
-    X = zeros(length(is.q), nbatches)
-    F = zeros(length(is.μ), nbatches)
-    W = zeros(1, nbatches)
+    X = Matrix{Float64}(length(is.q), batchsize)
+    F = Matrix{Float64}(length(is.μ), batchsize)
+    W = Matrix{Float64}(1, batchsize)
 
     for _ in 1:nbatches
         rand!(is.q, X)

@@ -7,7 +7,7 @@ module ImportanceSampling
 using Distributions
 
 import Base: show, size, length, ndims, mean, cov, var, std
-import Base.Random: rand
+import Base.Random: rand, rand!
 
 import StatsBase: ProbabilityWeights, pweights, sample
 import StatsFuns: logsumexp
