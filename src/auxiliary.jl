@@ -15,6 +15,16 @@ datasize(X::AbstractArray) = size(X, ndims(X))
 
 safe_rand(q::Distribution, ns::Int...) = reshape_vector(rand(q, ns...))
 
+#
+# "safer" lol
+#
+safe_pdf(q::UnivariateDistribution, X::AbstractArray) = pdf.(q, X)
+safe_pdf(q::Distribution, X::AbstractArray) = pdf(q, X)
+
+safe_pdf!(r::AbstractVector, q::UnivariateDistribution, X::AbstractArray) = (r .= vec(pdf.(q, X)))
+safe_pdf!(r::AbstractArray, q::UnivariateDistribution, X::AbstractArray) = (r .= pdf.(q, X))
+safe_pdf!(r::AbstractArray, q::Distribution, X::AbstractArray) = pdf!(r, q, X)
+
 function round_div(n::Int, a::Int)
     b = ceil(Int, n/a)
     n = b*a

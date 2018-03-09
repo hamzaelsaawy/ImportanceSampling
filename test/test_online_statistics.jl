@@ -109,6 +109,8 @@ end
 
         cv = ControlVariate(Df, Dg)
 
+        @test size(cv) == (Df, Dg)
+
         for i in 1:10:500
             update!(cv, fs[:, i:(i+9)], gs[:, i:(i+9)])
         end
