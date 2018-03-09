@@ -12,7 +12,7 @@ import Base.Random: rand, rand!
 import StatsBase: ProbabilityWeights, pweights, sample
 import StatsFuns: logsumexp
 import Distributions: probs, ncomponents, components, _rand!,
-        pdf, logpdf, _logpdf, _logpdf!
+        pdf, pdf!, logpdf, _logpdf, _logpdf!
 
 include("auxiliary.jl")
 include("mixture_distribution.jl")

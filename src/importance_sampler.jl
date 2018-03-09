@@ -10,7 +10,7 @@ abstract type AbstractImportanceSampler end
 function update!(is::AbstractImportanceSampler;
         X::Union{Void, AbstractVecOrMat{<:Real}}=nothing,  # samples
         F::Union{Void, AbstractVecOrMat{<:Real}}=nothing,  # function values
-        W::Union{Void, AbstractVecOrMat{<:Real}}=nothing,  # weights
+        W::Union{Void, AbstractVector{<:Real}}=nothing,  # weights
         niters::Int=0, nbatches::Int=0, batchsize::Int=0,
         kwds...)
 
@@ -18,46 +18,46 @@ function update!(is::AbstractImportanceSampler;
     isFvoid = isa(F, Void)
     isWvoid = isa(W, Void)
 
-    # make sure X, F, W are matrices (1 × something even)
+    # make sure X, F are matrices (1 × something)
+    # W cant handle matrices, X and F need it
     X = reshape_vector(X)
     F = reshape_vector(F)
-    W = reshape_vector(W)
 
     # dimensions checking
     isXvoid || size(X, 1) == length(is.q) ||
         error("X must share the same dimension as q")
 
-    isWvoid || size(W, 1) == 1 ||
-        error("W must be singleton observations only")
-
     isFvoid || size(F, 1) == length(is.μ) ||
         error("f must share the same dimension as μ")
 
-    all_equal( size.(filter(A -> !isa(A, Void), [X, F, W]), 2) ) ||
+    all_equal( datasize.(filter(A -> !isa(A, Void), [X, F, W])) ) ||
         error("X, F, and W must all have the same number of observations")
 
     # decide if we need to sample X
     sample = false
     if isXvoid
         xor(isFvoid, isWvoid) &&
-            error("both F or W must be provided if X is not")
+            error("both F and W must be provided if X is not")
 
         # no data passed, so pretty up batching and iters
         if isFvoid && isWvoid
             all([niters, nbatches, batchsize] .≥ 0) ||
                 error("niters, nbatches, and batchsize must non-negative")
 
-            sum([niters, nbatches, batchsize] .== 0) == 1 ||
-                error("exactly two of niters, nbatches, and batchsize must be provided")
+            sum([niters, nbatches, batchsize] .== 0) ≤ 1 ||
+                error("atleast two of niters, nbatches, and batchsize must be provided")
 
             niters == 0 && (niters = Int(batchsize*nbatches))
             nbatches == 0 && ((niters, nbatches) = round_div(niters, batchsize))
             batchsize == 0 && ((niters, batchsize) = round_div(niters, nbatches))
 
+            # if user provides all 3
+            (niters == nbatches * batchsize) ||
+                error("niters == nbatches * batchsize")
+
             sample = true
         end
     end
-
 
     return _update!(Val{sample}(), is, X, F, W, niters, nbatches, batchsize; kwds...)
 end
@@ -96,7 +96,7 @@ default_w(p, q::Distribution) =
 calcF(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
     calcF!(Matrix{Float64}(length(is.μ), size(X, 2)), is, X)
 
-@inline function calcF!(F::Matrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+@inline function calcF!(F::AbstractMatrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
     n = size(X, 2)
 
     for i in 1:n
@@ -107,13 +107,13 @@ calcF(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
 end
 
 calcW(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
-    calcW!(Matrix{Float64}(1, size(X, 2)), is, X)
+    calcW!(Vector{Float64}(size(X, 2)), is, X)
 
-@inline function calcW!(W::Matrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+@inline function calcW!(W::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
     n = size(X, 2)
 
     for i in 1:n
-        @inbounds W[1, i] = is.w(view(X, :, i))
+        @inbounds W[i] = is.w(view(X, :, i))
     end
 
     return W
@@ -133,7 +133,7 @@ mutable struct ImportanceSampler <: AbstractImportanceSampler
         xor(isa(p, Void), isa(w, Void)) ||
             error("Only one of p or w must be provided")
         isa(p, Void) || isa(p, Distribution) ||
-            error("p must <: Distributions.Distribution")
+            error("p must <: Distributions.Distribution and have logpdf defined")
         isa(w, Void) && (w = default_w(p, q))
 
         lengthf ≥ 1 ||
@@ -145,9 +145,9 @@ end
 
 function core_update(is::ImportanceSampler,
     F::AbstractMatrix{<:Real},
-    W::AbstractMatrix{<:Real})
+    W::AbstractVector{<:Real})
 
-    F .*= W
+    F .*= W'
     update!(is.μ, F)
     update!(is.d, W)
 
@@ -174,7 +174,7 @@ function _update!(::Val{true},
         is::ImportanceSampler,
         X::Union{Void, AbstractMatrix{<:Real}},
         F::Union{Void, AbstractMatrix{<:Real}},
-        W::Union{Void, AbstractMatrix{<:Real}},
+        W::Union{Void, AbstractVector{<:Real}},
         niters::Int, nbatches::Int, batchsize::Int;
         updateμ::Bool=true, _...)
 
@@ -182,7 +182,7 @@ function _update!(::Val{true},
 
     X = Matrix{Float64}(length(is.q), batchsize)
     F = Matrix{Float64}(length(is.μ), batchsize)
-    W = Matrix{Float64}(1, batchsize)
+    W = Vector{Float64}(batchsize)
 
     for _ in 1:nbatches
         rand!(is.q, X)
@@ -193,4 +193,176 @@ function _update!(::Val{true},
     end
 
     return is
+end
+
+##########################################################################################
+#                   Control Variate IS
+##########################################################################################
+mutable struct CvImportanceSampler <: AbstractImportanceSampler
+    q::Distribution
+    μ::MeanVariance
+    d::Diagnostic
+    β::ControlVariate
+    w
+    f!
+    g!s
+    θs::Vector{Vector{<:Real}}
+    use_qs::Bool
+
+    function CvImportanceSampler(f!, lengthf::Int,
+            g!s::AbstractVector{<:Tuple{Any, Vector{<:Real}}}, # [(g!, θ)...]
+            q::Distribution; p=nothing, w=nothing,
+            use_qs::Bool=false # use the q (or components of) for control variates
+            )
+        xor(isa(p, Void), isa(w, Void)) ||
+            error("Only one of p or w must be provided")
+        isa(p, Void) || isa(p, Distribution) ||
+            error("p must <: Distributions.Distribution and have logpdf defined")
+        isa(w, Void) && (w = default_w(p, q))
+
+        lengthf ≥ 1 ||
+            error("f must have a dimension greater than 0")
+
+        μ = MeanVariance(lengthf)
+        d = Diagnostic()
+
+        θs = last.(g!s)
+        g!s = first.(g!s)
+
+        if use_qs
+            _qs = (isa(q, MixtureDistribution)) ? q.components : [q]
+            _θs = fill([1.0], length(_qs))
+            _g!s = [(r, x) -> begin
+                        r[1] = pdf(q, x)
+                        r
+                    end
+                    for q in _qs]
+
+            append!(θs, _θs)
+            append!(g!s, _g!s)
+        end
+
+        β = ControlVariate(lengthf, sum(length, θs))
+
+        return new(q, μ, d, w, f!, g!s, θs, use_qs)
+    end
+end
+
+mean(is::CvImportanceSampler) = mean(is.μ) + is.β.β' * vcat(is.θs...)
+
+updateμ!(is::CvImportanceSampler; kwds...) = update!(is, kwds..., updateμ=true, updateβ=false)
+updateβ!(is::CvImportanceSampler; kwds...) = update!(is, kwds..., updateμ=false, updateβ=true)
+
+function core_update(is::CvImportanceSampler,
+    F::AbstractMatrix{<:Real},
+    G::AbstractMatrix{<:Real},
+    W::AbstractVector{<:Real},
+    Q::AbstractVector{<:Real},
+    updateμ::Bool, updateβ::Bool)
+
+    F .= (F.*W').*Q'
+
+    # β is G regressed onto F*P
+    updateβ && update!(is.β, G, F)
+
+    updateμ || return is
+
+    n = size(F, 2)
+    β = is.β.β
+
+    for i in 1:n
+        F[:, i] .*= W[i] * Q[i]
+        F[:, i] .-= β * G[:, i]
+        F[:, i] ./= Q[i]
+    end
+
+    update!(is.μ, F)
+    update!(is.d, W)
+
+    return is
+end
+
+# use provided values
+function _update!(::Val{false},
+        is::CvImportanceSampler,
+        X::Union{Void, AbstractMatrix{<:Real}},
+        F::Union{Void, AbstractMatrix{<:Real}},
+        W::Union{Void, AbstractMatrix{<:Real}},
+        niters::Int, nbatches::Int, batchsize::Int;
+        G::Union{Void, AbstractMatrix{<:Real}}=nothing,
+        Q::Union{Void, AbstractVector{<:Real}}=nothing,
+        updateμ::Bool=true, updateβ::Bool=false, _...)
+
+    updateμ || updateβ || return
+
+    # more dims checking for F & Q
+    isGvoid = isa(G, Void)
+    isQvoid = isa(Q, Void)
+
+    G = reshape_vector(X)
+
+    isGvoid || size(G, 1) == size(is.β, 2) ||
+        error("h must share the same dimension as β")
+
+    all_equal( datasize.(filter(A -> !isa(A, Void), [X, F, G, W, Q])) ) ||
+        error("X, F, G, W, and Q must all have the same number of observations")
+
+    # not sampling, so assume that either we have F&W, or X and some others
+    isa(X, Void) && any(isGvoid, isQvoid) &&
+        error("F, G, W, and Q must be provided if X is not")
+
+    isa(F, Void) && (F = calcF(is, X))
+    isa(W, Void) && (W = calcW(is, X))
+    isGvoid && (G = calcG(is, X))
+    isQvoid && (Q = calcQ(is, X))
+
+    return core_update(is, F, G, W, Q, updateμ, updateβ)
+end
+
+# sample
+function _update!(::Val{true},
+        is::CvImportanceSampler,
+        X::Union{Void, AbstractMatrix{<:Real}},
+        F::Union{Void, AbstractMatrix{<:Real}},
+        W::Union{Void, AbstractVector{<:Real}},
+        niters::Int, nbatches::Int, batchsize::Int;
+        updateμ::Bool=true, updateβ::Bool=true, _...)
+
+    updateμ || updateβ || return is
+
+    X = Matrix{Float64}(length(is.q), batchsize)
+    F = Matrix{Float64}(length(is.μ), batchsize)
+    W = Vector{Float64}(batchsize)
+
+    for _ in 1:nbatches
+        rand!(is.q, X)
+        calcF!(F, is, X)
+        calcW!(W, is, X)
+
+        core_update(is, F, W)
+    end
+
+    return is
+end
+
+calcQ(is::AbstractImportanceSampler, X::Matrix{<:Real}) = pdf(is.q, X)
+calcQ!(Q::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real}) = pdf!(Q, is.q, X)
+
+calcG(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
+    calcG!(Matrix{Float64}(size(is.β, 2), size(X, 2)), is, X)
+
+@inline function calcG!(G::AbstractMatrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+    n = size(X, 2)
+
+    lens = length.(is.θ)
+    cumlens = cumsum(vcat(1, lens))
+    rs = [cumlens[i] : cumlens[i+1]-1 for i in 1:length(is.θ)]
+
+    for i in 1:n
+        for (i, g!) in enumerate(is.g!s)
+            @inbounds g!(view(G, rs[i], i), view(X, :, i))
+        end
+    end
+
+    return G
 end

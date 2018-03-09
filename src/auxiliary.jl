@@ -11,6 +11,8 @@ outer!(A, v, w=v) = A_mul_Bt!(A, v, w)
 reshape_vector(A::Vector) = reshape(A, 1, length(A))
 reshape_vector(A) = A
 
+datasize(X::AbstractArray) = size(X, ndims(X))
+
 safe_rand(q::Distribution, ns::Int...) = reshape_vector(rand(q, ns...))
 
 function round_div(n::Int, a::Int)

@@ -23,7 +23,7 @@ struct MixtureDistribution{F<:VariateForm, S<:ValueSupport} <: Distribution{F, S
         all_equal(length, _components) || error("components must have the same length")
         all_equal(eltype, _components) || error("components must have the same element type")
 
-        # gives an error for support(Poisson)
+        # gives an error for support(<:DiscreteUnivariate)
         #(F == Univariate) && ( all_equal(support, _components) ||
         #       error("Distributions must share the same support") )
 
