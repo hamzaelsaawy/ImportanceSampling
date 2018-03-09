@@ -210,10 +210,15 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
     θs::Vector{Vector{Float64}}
 
     function CvImportanceSampler(f!, lengthf::Int,
-            g!s::AbstractVector{<:Tuple{Any, Vector{Float64}}}, # [(g!, θ)...]
-            q::Distribution; p=nothing, w=nothing,
+            q::Distribution;
+            g!s::Union{AbstractVector{<:Tuple{Any, Vector{Float64}}}, Void}=nothing, # [(g!, θ)...]
+            p=nothing, w=nothing,
             use_q::Bool=false # use the q (or components of) for control variates
             )
+
+        isa(g!s, Void) && !use_q &&
+            error("either g!s must be provided, or q is used")
+
         xor(isa(p, Void), isa(w, Void)) ||
             error("Only one of p or w must be provided")
         isa(p, Void) || isa(p, Distribution) ||
@@ -226,20 +231,20 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
         μ = MeanVariance(lengthf)
         d = Diagnostic()
 
-        θs = last.(g!s)
-        g!s = first.(g!s)
-
         if use_q
             _qs = (isa(q, MixtureDistribution)) ? q.components : [q]
-            _θs = fill([1.0], length(_qs))
-            _g!s = [(r, x) -> begin
-                        r[1] = pdf(q, x)
-                        r
-                    end
-                    for q in _qs]
+            _θs = (isa(q, MixtureDistribution)) ?
+                    [[w] for w in q.prior] :
+                    fill([1.0], length(_qs))
+            _g!s = [(r, x) -> safe_pdf!(r, q, x) for q in _qs]
 
-            append!(θs, _θs)
-            append!(g!s, _g!s)
+            if isa(g!s, Void)
+                θs = _θs
+                g!s = _g!s
+            else
+                θs = append!(last.(g!s), _θs)
+                g!s = append!(first.(g!s), _g!s)
+            end
         end
 
         β = ControlVariate(lengthf, sum(length, θs))
@@ -248,7 +253,7 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
     end
 end
 
-mean(is::CvImportanceSampler) = mean(is.μ) + is.β.β' * vcat(is.θs...)
+mean(is::CvImportanceSampler) = mean(is.μ) + make_scalar(is.β.β' * vcat(is.θs...))
 
 coeffs(is::CvImportanceSampler) = coeffs(is.β)
 
@@ -256,26 +261,27 @@ updateμ!(is::CvImportanceSampler; kwds...) = update!(is; kwds..., updateμ=true
 updateβ!(is::CvImportanceSampler; kwds...) = update!(is; kwds..., updateμ=false, updateβ=true)
 
 function core_update(is::CvImportanceSampler,
-    F::AbstractMatrix{<:Real},
-    G::AbstractMatrix{<:Real},
-    W::AbstractVector{<:Real},
-    Q::AbstractVector{<:Real},
-    updateμ::Bool, updateβ::Bool)
-
-    F .= (F.*W').*Q'
-
-    # β is G regressed onto F*P
-    updateβ && update!(is.β, F, G)
-
-    updateμ || return is
+        F::AbstractMatrix{<:Real},
+        G::AbstractMatrix{<:Real},
+        W::AbstractVector{<:Real},
+        Q::AbstractVector{<:Real},
+        updateμ::Bool, updateβ::Bool)
 
     n = size(F, 2)
     β = is.β.β
 
     for i in 1:n
-        F[:, i] .*= W[i] * Q[i]
-        F[:, i] .-= β' * G[:, i]
-        F[:, i] ./= Q[i]
+        @inbounds F[:, i] .*= exp.(log(W[i]) .+ log(Q[i]))
+    end
+
+    # β is G regressed onto F*P
+    updateβ && update!(is.β, F, G)
+    updateμ || return is
+
+    for i in 1:n
+        @inbounds F[:, i] .-= β' * G[:, i]
+        s = sign.(F[:, i])
+        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .- log(Q[i]))
     end
 
     update!(is.μ, F)
@@ -311,8 +317,8 @@ function _update!(::Val{false},
         error("F, G, W, and Q must be provided if X is not")
 
     isa(F, Void) && (F = calcF(is, X))
-    isa(W, Void) && (W = calcW(is, X))
     isa(G, Void) && (G = calcG(is, X))
+    isa(W, Void) && (W = calcW(is, X))
     isa(Q, Void) && (Q = calcQ(is, X))
 
     return core_update(is, F, G, W, Q, updateμ, updateβ)

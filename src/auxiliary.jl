@@ -11,14 +11,18 @@ outer!(A, v, w=v) = A_mul_Bt!(A, v, w)
 reshape_vector(A::Vector) = reshape(A, 1, length(A))
 reshape_vector(A) = A
 
-datasize(X::AbstractArray) = size(X, ndims(X))
+datasize(A::AbstractArray) = size(A, ndims(A))
 
-safe_rand(q::Distribution, ns::Int...) = reshape_vector(rand(q, ns...))
+# not type safe
+# also not performant
+make_scalar(A::AbstractArray) = (length(A) == 1) ? A[1] : A
 
 #
 # "safer" lol
 #
-safe_pdf(q::UnivariateDistribution, X::AbstractArray) = pdf.(q, X)
+safe_rand(q::Distribution, ns::Int...) = reshape_vector(rand(q, ns...))
+
+safe_pdf(q::UnivariateDistribution, X::AbstractArray) = vec(pdf.(q, X))
 safe_pdf(q::Distribution, X::AbstractArray) = pdf(q, X)
 
 safe_pdf!(r::AbstractVector, q::UnivariateDistribution, X::AbstractArray) = (r .= vec(pdf.(q, X)))
