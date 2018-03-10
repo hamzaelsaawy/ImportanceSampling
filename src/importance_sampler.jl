@@ -148,7 +148,15 @@ function core_update(is::ImportanceSampler,
     F::AbstractMatrix{<:Real},
     W::AbstractVector{<:Real})
 
-    F .*= W'
+    n = size(F, 2)
+
+    map!(log, W, W)
+
+    for i in 1:n
+        s = sign.(F[:, i])
+        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .+ W[i])
+    end
+
     update!(is.μ, F)
     update!(is.d, W)
 
@@ -233,23 +241,25 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
 
         if use_q
             _qs = (isa(q, MixtureDistribution)) ? q.components : [q]
+            _g!s = [(r, x) -> safe_pdf!(r, q, x) for q in _qs]
             _θs = (isa(q, MixtureDistribution)) ?
                     [[w] for w in q.prior] :
                     fill([1.0], length(_qs))
-            _g!s = [(r, x) -> safe_pdf!(r, q, x) for q in _qs]
+        end
 
-            if isa(g!s, Void)
-                θs = _θs
-                g!s = _g!s
+        if !isa(g!s, Void)
+            if use_q
+                _g!s = append!(_g!s, first.(g!s))
+                _θs = append!(_θs, last.(g!s))
             else
-                θs = append!(last.(g!s), _θs)
-                g!s = append!(first.(g!s), _g!s)
+                _g!s = first.(g!s)
+                _θs = last.(g!s)
             end
         end
 
-        β = ControlVariate(lengthf, sum(length, θs))
+        β = ControlVariate(lengthf, sum(length, _θs))
 
-        return new(q, μ, d, β, w, f!, g!s, θs)
+        return new(q, μ, d, β, w, f!, _g!s, _θs)
     end
 end
 
@@ -270,8 +280,12 @@ function core_update(is::CvImportanceSampler,
     n = size(F, 2)
     β = is.β.β
 
+    map!(log, Q, Q)
+    map!(log, W, W)
+
     for i in 1:n
-        @inbounds F[:, i] .*= exp.(log(W[i]) .+ log(Q[i]))
+        s = sign.(F[:, i])
+        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .+ W[i] .+ Q[i])
     end
 
     # β is G regressed onto F*P
@@ -281,7 +295,7 @@ function core_update(is::CvImportanceSampler,
     for i in 1:n
         @inbounds F[:, i] .-= β' * G[:, i]
         s = sign.(F[:, i])
-        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .- log(Q[i]))
+        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .- Q[i])
     end
 
     update!(is.μ, F)
