@@ -87,12 +87,30 @@ rand!(X::AbstractArray, is::AbstractImportanceSampler) = rand(X, is.q)
 
 default_w(p, q::UnivariateDistribution) =
     (x::AbstractVector{<:Real}) -> begin
-        x = first(x)
+        x = x[1]
         exp(logpdf(p, x) - logpdf(q, x))
     end
 
 default_w(p, q::Distribution) =
     (x::AbstractVector{<:Real}) -> exp(logpdf(p, x) - logpdf(q, x))
+
+calcW(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
+    calcW!(Vector{Float64}(size(X, 2)), is, X)
+
+@inline function calcW!(W::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+    n = size(X, 2)
+
+    for i in 1:n
+        @inbounds W[i] = is.w(view(X, :, i))
+    end
+
+    return W
+end
+
+calcQ(is::AbstractImportanceSampler, X::Matrix{<:Real}) = safe_pdf(is.q, X)
+
+calcQ!(Q::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real}) =
+    safe_pdf!(Q, is.q, X)
 
 calcF(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
     calcF!(Matrix{Float64}(length(is.μ), size(X, 2)), is, X)
@@ -107,17 +125,23 @@ calcF(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
     return F
 end
 
-calcW(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
-    calcW!(Vector{Float64}(size(X, 2)), is, X)
+calcG(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
+    calcG!(Matrix{Float64}(size(is.β, 2), size(X, 2)), is, X)
 
-@inline function calcW!(W::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
+@inline function calcG!(G::AbstractMatrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
     n = size(X, 2)
 
+    lens = length.(is.θs)
+    cumlens = cumsum(vcat(1, lens))
+    rs = [cumlens[i] : cumlens[i+1]-1 for i in 1:length(is.θs)]
+
     for i in 1:n
-        @inbounds W[i] = is.w(view(X, :, i))
+        for (j, g!) in enumerate(is.g!s)
+            @inbounds g!(view(G, rs[j], i), view(X, :, i))
+        end
     end
 
-    return W
+    return G
 end
 
 ##########################################################################################
@@ -133,8 +157,6 @@ mutable struct ImportanceSampler <: AbstractImportanceSampler
     function ImportanceSampler(f!, lengthf::Int, q::Distribution ; p=nothing, w=nothing)
         xor(isa(p, Void), isa(w, Void)) ||
             error("Only one of p or w must be provided")
-        isa(p, Void) || isa(p, Distribution) ||
-            error("p must <: Distributions.Distribution and have logpdf defined")
         isa(w, Void) && (w = default_w(p, q))
 
         lengthf ≥ 1 ||
@@ -148,14 +170,7 @@ function core_update(is::ImportanceSampler,
     F::AbstractMatrix{<:Real},
     W::AbstractVector{<:Real})
 
-    n = size(F, 2)
-
-    map!(log, W, W)
-
-    for i in 1:n
-        s = sign.(F[:, i])
-        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .+ W[i])
-    end
+    F .= sign.(F) .* exp.(log.(abs.(F)) .+ log.(W'))
 
     update!(is.μ, F)
     update!(is.d, W)
@@ -229,8 +244,6 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
 
         xor(isa(p, Void), isa(w, Void)) ||
             error("Only one of p or w must be provided")
-        isa(p, Void) || isa(p, Distribution) ||
-            error("p must <: Distributions.Distribution and have logpdf defined")
         isa(w, Void) && (w = default_w(p, q))
 
         lengthf ≥ 1 ||
@@ -263,6 +276,7 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
     end
 end
 
+# hacky method, but for edge case when length(f) == 1
 mean(is::CvImportanceSampler) = mean(is.μ) + make_scalar(is.β.β' * vcat(is.θs...))
 
 coeffs(is::CvImportanceSampler) = coeffs(is.β)
@@ -270,6 +284,9 @@ coeffs(is::CvImportanceSampler) = coeffs(is.β)
 updateμ!(is::CvImportanceSampler; kwds...) = update!(is; kwds..., updateμ=true, updateβ=false)
 updateβ!(is::CvImportanceSampler; kwds...) = update!(is; kwds..., updateμ=false, updateβ=true)
 
+# the regression is f*w ≈ βᵀh/q, and μ ≈ βᵀθ + ∑ f*w - βᵀh/q,
+# so compute f*w and h/q before doing anything else
+# use exp and logs b/c W can be ≈ 0, or very, very large if q is poorly chosen
 function core_update(is::CvImportanceSampler,
         F::AbstractMatrix{<:Real},
         G::AbstractMatrix{<:Real},
@@ -277,26 +294,16 @@ function core_update(is::CvImportanceSampler,
         Q::AbstractVector{<:Real},
         updateμ::Bool, updateβ::Bool)
 
-    n = size(F, 2)
-    β = is.β.β
+    # f*w and h/q
+    F .= sign.(F) .* exp.(log.(abs.(F)) .+ log.(W'))
+    G .= sign.(G) .* exp.(log.(abs.(G)) .- log.(Q'))
 
-    map!(log, Q, Q)
-    map!(log, W, W)
-
-    for i in 1:n
-        s = sign.(F[:, i])
-        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .+ W[i] .+ Q[i])
-    end
-
-    # β is G regressed onto F*P
+    # β is g/q regressed onto f*w
     updateβ && update!(is.β, F, G)
     updateμ || return is
 
-    for i in 1:n
-        @inbounds F[:, i] .-= β' * G[:, i]
-        s = sign.(F[:, i])
-        @inbounds F[:, i] .= s .* exp.(log.(abs.(F[:, i])) .- Q[i])
-    end
+    β = is.β.β
+    F .-= β' * G
 
     update!(is.μ, F)
     update!(is.d, W)
@@ -368,27 +375,4 @@ function _update!(::Val{true},
     end
 
     return is
-end
-
-calcQ(is::AbstractImportanceSampler, X::Matrix{<:Real}) = safe_pdf(is.q, X)
-calcQ!(Q::AbstractVector{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real}) =
-    safe_pdf!(Q, is.q, X)
-
-calcG(is::AbstractImportanceSampler, X::Matrix{<:Real}) =
-    calcG!(Matrix{Float64}(size(is.β, 2), size(X, 2)), is, X)
-
-@inline function calcG!(G::AbstractMatrix{Float64}, is::AbstractImportanceSampler, X::Matrix{<:Real})
-    n = size(X, 2)
-
-    lens = length.(is.θs)
-    cumlens = cumsum(vcat(1, lens))
-    rs = [cumlens[i] : cumlens[i+1]-1 for i in 1:length(is.θs)]
-
-    for i in 1:n
-        for (j, g!) in enumerate(is.g!s)
-            @inbounds g!(view(G, rs[j], i), view(X, :, i))
-        end
-    end
-
-    return G
 end
