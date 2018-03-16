@@ -49,8 +49,7 @@ Here, `g!s` is a vector of tuples, `(g!, θ)`, where
 `g!(r::AbstractVector, x::AbstractVector)` takes a vector always of size `length(q)`
 and writes the result in `r`, which always has the size `length(θ)`. `θ` is the integral
 of `g` over the support of `q`. `use_q` uses `q`, or its components if
-`q <: MixtureDistribution`, as control variates as well, with a `θ` of `[1.0]`, or the
-prior if it is a mixture.
+`q <: MixtureDistribution`, as control variates as well, with a `θ` of `[1.0]`.
 
 ## Running IS
 The general syntax to run an `ImportanceSampler` is:

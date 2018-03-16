@@ -255,9 +255,7 @@ mutable struct CvImportanceSampler <: AbstractImportanceSampler
         if use_q
             _qs = (isa(q, MixtureDistribution)) ? q.components : [q]
             _g!s = [(r, x) -> safe_pdf!(r, q, x) for q in _qs]
-            _θs = (isa(q, MixtureDistribution)) ?
-                    [[w] for w in q.prior] :
-                    fill([1.0], length(_qs))
+            _θs = fill([1.0], length(_qs))
         end
 
         if !isa(g!s, Void)

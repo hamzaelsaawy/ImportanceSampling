@@ -22,11 +22,15 @@ make_scalar(A::AbstractArray) = (length(A) == 1) ? A[1] : A
 #
 safe_rand(q::Distribution, ns::Int...) = reshape_vector(rand(q, ns...))
 
+# Distributions.jl has some weird edge behavior for uni- vs multivariate
 safe_pdf(q::UnivariateDistribution, X::AbstractArray) = vec(pdf.(q, X))
 safe_pdf(q::Distribution, X::AbstractArray) = pdf(q, X)
 
+# weird edge case with  .= ?
 safe_pdf!(r::AbstractVector, q::UnivariateDistribution, X::AbstractArray) = (r .= vec(pdf.(q, X)))
 safe_pdf!(r::AbstractArray, q::UnivariateDistribution, X::AbstractArray) = (r .= pdf.(q, X))
+
+safe_pdf!(r::AbstractArray, q::Distribution, X::AbstractVector) = (r .= pdf(q, X))
 safe_pdf!(r::AbstractArray, q::Distribution, X::AbstractArray) = pdf!(r, q, X)
 
 function round_div(n::Int, a::Int)
